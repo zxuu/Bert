@@ -1,9 +1,3 @@
-# -- coding: utf-8 --
-# @Date : 04/26/2023 10:42
-# @Author : zxu
-# @File : bert.py
-# @Software: PyCharm
-
 import re
 import math
 import torch
