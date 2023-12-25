@@ -19,13 +19,13 @@ text = (
     'I am going to visit my grandmother. she is not very well'  # R
 )
 
-sentences = re.sub("[.,!?\\-]", '', text.lower()).split('\n')  # filter '.', ',', '?', '!'
-word_list = list(set(" ".join(sentences).split()))  # ['hello', 'how', 'are', 'you',...] 无序
+sentences = re.sub("[.,!?\\-]", '', text.lower()).split('\n')  # filter '.', ',', '?', '!'     sentences list
+word_list = list(set(" ".join(sentences).split()))  # vocab ['hello', 'how', 'are', 'you',...] 无序
 word2idx = {'[PAD]': 0, '[CLS]': 1, '[SEP]': 2, '[MASK]': 3}
 for i, w in enumerate(word_list):
     word2idx[w] = i + 4
-idx2word = {i: w for i, w in enumerate(word2idx)}
-vocab_size = len(word2idx)  # word字典大小
+idx2word = {i: w for i, w in enumerate(word2idx)}    # id2word
+vocab_size = len(word2idx)  # word字典大小(包括特殊字符)
 
 token_list = list()
 for sentence in sentences:
@@ -79,15 +79,16 @@ n_segments = 2
 def make_data():
     batch = []
     positive = negative = 0
-    while positive != batch_size / 2 or negative != batch_size / 2:
+    while positive != batch_size / 2 or negative != batch_size / 2:    # 各占一半
         tokens_a_index, tokens_b_index = randrange(len(sentences)), randrange(len(sentences))  # 随机取第几个句子
         tokens_a, tokens_b = token_list[tokens_a_index], token_list[tokens_b_index]
         input_ids = [word2idx['[CLS]']] + tokens_a + [word2idx['[SEP]']] + tokens_b + [word2idx['[SEP]']]
+        # 中间sep为第一句
         segment_ids = [0] * (1 + len(tokens_a) + 1) + [1] * (len(tokens_b) + 1)  # 第一句话用0，第二句话用1
 
         # MASK LM
         n_pred = min(max_pred, max(1, int(len(input_ids) * 0.15)))  # 随机把一句话中 15% 的 token（字或词）进行替换
-        cand_maked_pos = [i for i, token in enumerate(input_ids)  # 只对是单词的位置进行mask
+        cand_maked_pos = [i for i, token in enumerate(input_ids)  # 只对是单词的位置进行mask，特殊字符不Mask
                           if token != word2idx['[CLS]'] and token != word2idx['[SEP]']]  # candidate masked position
         shuffle(cand_maked_pos)
         masked_tokens, masked_pos = [], []
@@ -147,7 +148,11 @@ class MyDataSet(Data.Dataset):
         return self.input_ids[idx], self.segment_ids[idx], self.masked_tokens[idx], self.masked_pos[idx], self.isNext[
             idx]
 
-
+# input_ids [6, 30]
+# segment_ids [6, 30]
+# masked_tokens [6, 5]
+# masked_pos [6, 5]
+# isNext [6]
 loader = Data.DataLoader(MyDataSet(input_ids, segment_ids, masked_tokens, masked_pos, isNext), batch_size, True)
 
 
@@ -179,6 +184,14 @@ class Embedding(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x, seg):
+        """
+        Args:
+            x (_type_):input_ids [batch, seq_len]
+            seg (_type_):segment_ids [batch, seq_len]
+
+        Returns:
+            _type_: _description_
+        """
         seq_len = x.size(1)
         pos = torch.arange(seq_len, dtype=torch.long)
         pos = pos.unsqueeze(0).expand_as(x)  # [seq_len] -> [batch_size, seq_len]
@@ -219,7 +232,7 @@ class MultiHeadAttention(nn.Module):
         # context: [batch_size, n_heads, seq_len, d_v], attn: [batch_size, n_heads, seq_len, seq_len]
         context = ScaledDotProductAttention()(q_s, k_s, v_s, attn_mask)
         context = context.transpose(1, 2).contiguous().view(batch_size, -1,
-                                                            n_heads * d_v)  # context: [batch_size, seq_len, n_heads, d_v]
+                                                            n_heads * d_v)  # context: [batch_size, seq_len, n_heads*d_v]
         output = nn.Linear(n_heads * d_v, d_model)(context)
         return nn.LayerNorm(d_model)(output + residual)  # output: [batch_size, seq_len, d_model]
 
@@ -228,6 +241,7 @@ class PoswiseFeedForwardNet(nn.Module):
     def __init__(self):
         super(PoswiseFeedForwardNet, self).__init__()
         self.fc1 = nn.Linear(d_model, d_ff)
+        # 中间有激活函数
         self.fc2 = nn.Linear(d_ff, d_model)
 
     def forward(self, x):
@@ -243,7 +257,7 @@ class EncoderLayer(nn.Module):
 
     def forward(self, enc_inputs, enc_self_attn_mask):
         enc_outputs = self.enc_self_attn(enc_inputs, enc_inputs, enc_inputs,
-                                         enc_self_attn_mask)  # enc_inputs to same Q,K,V
+                                         enc_self_attn_mask)  # enc_inputs [batch_size, seq_len, d_model]
         enc_outputs = self.pos_ffn(enc_outputs)  # enc_outputs: [batch_size, seq_len, d_model]
         return enc_outputs
 
@@ -270,10 +284,8 @@ class BERT(nn.Module):
         output = self.embedding(input_ids, segment_ids)  # [bach_size, seq_len, d_model]
         enc_self_attn_mask = get_attn_pad_mask(input_ids, input_ids)  # [batch_size, maxlen, maxlen]
         for layer in self.layers:
-            # output: [batch_size, max_len, d_model]
+            # output: [batch_size, seq_len, d_model]
             output = layer(output, enc_self_attn_mask)
-
-        output_temp = output    # [batch_size, maxlen, d_model]
         # 取cls嵌入向量
         output_cls = output[:, 0]    # [batch_size, d_model] 取cls嵌入向量
         h_pooled = self.fc(output_cls)  # [batch_size, d_model]
@@ -294,11 +306,11 @@ optimizer = optim.Adadelta(model.parameters(), lr=0.001)
 # train
 for epoch in range(200):
     for input_ids, segment_ids, masked_tokens, masked_pos, isNext in loader:
-        logits_lm, logits_clsf = model(input_ids, segment_ids, masked_pos)
+        logits_lm, logits_clsf = model(input_ids, segment_ids, masked_pos)    # [batch, 2] for logits_clsf
         loss_lm = criterion(logits_lm.view(-1, vocab_size), masked_tokens.view(-1))  # [batch_size, max_pred, vocab_size] for masked LM
         loss_lm = (loss_lm.float()).mean()
         loss_clsf = criterion(logits_clsf, isNext)  # for sentence classification
-        loss = loss_lm + loss_clsf
+        loss = loss_lm + loss_clsf    # 两个loss优化
         if (epoch + 1) % 10 == 0:
             print('Epoch:', '%04d' % (epoch + 1), 'loss =', '{:.6f}'.format(loss))
         optimizer.zero_grad()
